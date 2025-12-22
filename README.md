@@ -25,22 +25,6 @@ This project demonstrates key OTP patterns:
 
 The rate limiter uses a one-to-one mapping between keys and GenServer processes:
 
-```mermaid
-graph TB
-    subgraph app[RateLimit Application]
-        subgraph sup[Bucket.Supervisor - DynamicSupervisor]
-            B1[Bucket GenServer<br/>key: user1]
-            B2[Bucket GenServer<br/>key: user2]
-            B3[Bucket GenServer<br/>key: ...]
-        end
-    end
-
-    B1 --- State1[State: max_requests, used, time_window, data]
-    B2 --- State2[State: max_requests, used, time_window, data]
-```
-
-**Component Overview:**
-
 ```
 RateLimit Application
 └── Bucket.Supervisor (DynamicSupervisor)
@@ -50,6 +34,8 @@ RateLimit Application
     │   └── State: max_requests, used, time_window, data
     └── ... (more buckets created on-demand)
 ```
+
+Each bucket GenServer maintains its own isolated state and rate limit counters. When a bucket is idle for too long, it automatically terminates to free resources.
 
 ### Design Principles
 
