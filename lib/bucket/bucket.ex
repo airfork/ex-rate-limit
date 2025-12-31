@@ -8,6 +8,14 @@ defmodule RateLimit.Bucket do
 
   use GenServer
 
+  def child_spec(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :transient  # <-- Only restart on abnormal exit, not normal exit
+    }
+  end
+
   def start_link(opts) do
     bucket_key = Keyword.fetch!(opts, :key)
 
@@ -27,10 +35,11 @@ defmodule RateLimit.Bucket do
       time_till_refresh: Keyword.get(opts, :time_till_refresh, 30000),
       used: 0,
       data: %{},
-      last_refreshed_at: System.monotonic_time(:millisecond)
+      last_refreshed_at: System.monotonic_time(:millisecond),
+      idle_timeout: Keyword.get(opts, :idle_timeout, 60_000)
     }
 
-    {:ok, state}
+    {:ok, state, state.idle_timeout}
   end
 
   # Check the bucket's status, does not consume a request
@@ -46,12 +55,15 @@ defmodule RateLimit.Bucket do
         %{
           max_requests: new_state.max_requests,
           used: new_state.used,
-          time_till_refresh: time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)
-        }}, new_state}
+          time_till_refresh:
+            time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)
+        }}, new_state, new_state.idle_timeout}
     else
       {:reply,
-       {:deny, retry_after_ms: time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)},
-       state}
+       {:deny,
+        retry_after_ms:
+          time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)}, new_state,
+       new_state.idle_timeout}
     end
   end
 
@@ -64,10 +76,14 @@ defmodule RateLimit.Bucket do
     requests = new_state.used + 1
 
     if requests > new_state.max_requests do
-      {:reply, {:deny, retry_after_ms: time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)}, new_state}
+      {:reply,
+       {:deny,
+        retry_after_ms:
+          time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)}, new_state,
+       new_state.idle_timeout}
     else
       new_state = %{new_state | used: requests, data: Map.merge(new_state.data, data)}
-      {:reply, {:ok}, new_state}
+      {:reply, {:ok}, new_state, new_state.idle_timeout}
     end
   end
 
@@ -81,16 +97,26 @@ defmodule RateLimit.Bucket do
     requests = new_state.used + 1
 
     if requests > new_state.max_requests do
-      {:reply, {:deny, retry_after_ms: time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)}, new_state}
+      {:reply,
+       {:deny,
+        retry_after_ms:
+          time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)}, new_state,
+       new_state.idle_timeout}
     else
       new_state = %{new_state | used: requests}
-      output = case fields do
-        [] -> new_state.data
-        _ -> Map.take(new_state.data, fields)
-      end
 
-      {:reply, {:ok, output}, new_state}
+      output =
+        case fields do
+          [] -> new_state.data
+          _ -> Map.take(new_state.data, fields)
+        end
+
+      {:reply, {:ok, output}, new_state, new_state.idle_timeout}
     end
+  end
+
+  def handle_info(:timeout, state) do
+    {:stop, :normal, state}
   end
 
   # Calculate the time until the bucket needs to be refreshed
