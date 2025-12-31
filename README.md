@@ -96,17 +96,17 @@ Adds or updates fields in the bucket's state. This operation consumes one reques
 - `data` (Map) - Key-value pairs to store/update in the bucket state (default: `%{}`)
 
 **Returns:**
-- `{:ok, state}` - Successfully updated state, returns the full bucket state
+- `{:ok}` - Successfully updated state
 - `{:deny, retry_after_ms: integer}` - Bucket is out of capacity
 - `{:invalid_key, key: String}` - Bucket does not exist
 
 **Example:**
 ```elixir
 RateLimit.put("user_123", %{name: "Alice", role: "admin"})
-# => {:ok, %{name: "Alice", role: "admin", ...}}
+# => {:ok}
 
 RateLimit.put("user_123", %{role: "user"})
-# => {:ok, %{name: "Alice", role: "user", ...}}
+# => {:ok}
 ```
 
 ### `get(bucket, fields \\ [])`

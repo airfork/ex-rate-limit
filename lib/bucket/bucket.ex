@@ -1,4 +1,4 @@
-defmodule Bucket.Bucket do
+defmodule RateLimit.Bucket do
   @moduledoc """
   A module for a bucket resource.
 
@@ -9,10 +9,101 @@ defmodule Bucket.Bucket do
   use GenServer
 
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    bucket_key = Keyword.fetch!(opts, :key)
+
+    # The :via tuple tells GenServer to register with the registry
+    GenServer.start_link(__MODULE__, opts, name: via_tuple(bucket_key))
+  end
+
+  defp via_tuple(bucket_key) do
+    {:via, Registry, {RateLimit.Registry, bucket_key}}
   end
 
   def init(opts) do
-    {:ok, opts}
+    # Extract passed in data, with defaults
+
+    state = %{
+      max_requests: Keyword.get(opts, :max_requests, 5),
+      time_till_refresh: Keyword.get(opts, :time_till_refresh, 30000),
+      used: 0,
+      data: %{},
+      last_refreshed_at: System.monotonic_time(:millisecond)
+    }
+
+    {:ok, state}
+  end
+
+  # Check the bucket's status, does not consume a request
+  # Returns {:ok, %{max_requests: integer, used: integer, time_till_refresh: integer}} if the bucket has capacity
+  # Returns {:deny, retry_after_ms: integer} if the bucket is out of capacity
+  # Will refresh the bucket if needed
+  def handle_call(:check, _from, state) do
+    new_state = refresh_if_needed(state)
+
+    if new_state.used < new_state.max_requests do
+      {:reply,
+       {:ok,
+        %{
+          max_requests: new_state.max_requests,
+          used: new_state.used,
+          time_till_refresh: time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)
+        }}, new_state}
+    else
+      {:reply,
+       {:deny, retry_after_ms: time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)},
+       state}
+    end
+  end
+
+  # Put data into the bucket, consumes one request
+  # Returns {:ok} if the bucket has capacity
+  # Returns {:deny, retry_after_ms: integer} if the bucket is out of capacity
+  # Will refresh the bucket if needed
+  def handle_call({:put, data}, _from, state) do
+    new_state = refresh_if_needed(state)
+    requests = new_state.used + 1
+
+    if requests > new_state.max_requests do
+      {:reply, {:deny, retry_after_ms: time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)}, new_state}
+    else
+      new_state = %{new_state | used: requests, data: Map.merge(new_state.data, data)}
+      {:reply, {:ok}, new_state}
+    end
+  end
+
+  # Get data from the bucket, consumes one request
+  # Returns {:ok, state.data} if the bucket has capacity and no fields are provided
+  # Returns {:ok, Map.take(state.data, fields)} if the bucket has capacity and fields are provided
+  # Returns {:deny, retry_after_ms: integer} if the bucket is out of capacity
+  # Will refresh the bucket if needed
+  def handle_call({:get, fields}, _from, state) do
+    new_state = refresh_if_needed(state)
+    requests = new_state.used + 1
+
+    if requests > new_state.max_requests do
+      {:reply, {:deny, retry_after_ms: time_till_refresh(new_state.last_refreshed_at, new_state.time_till_refresh)}, new_state}
+    else
+      new_state = %{new_state | used: requests}
+      output = case fields do
+        [] -> new_state.data
+        _ -> Map.take(new_state.data, fields)
+      end
+
+      {:reply, {:ok, output}, new_state}
+    end
+  end
+
+  # Calculate the time until the bucket needs to be refreshed
+  defp time_till_refresh(last_refreshed_at, time_till_refresh) do
+    time_till_refresh - (System.monotonic_time(:millisecond) - last_refreshed_at)
+  end
+
+  # Update bucket's used and last_refreshed_at if needed
+  defp refresh_if_needed(state) do
+    if time_till_refresh(state.last_refreshed_at, state.time_till_refresh) <= 0 do
+      %{state | used: 0, last_refreshed_at: System.monotonic_time(:millisecond)}
+    else
+      state
+    end
   end
 end

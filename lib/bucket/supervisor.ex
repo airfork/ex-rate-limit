@@ -1,21 +1,22 @@
-defmodule Bucket.Supervisor do
+defmodule RateLimit.Supervisor do
   @moduledoc """
-  A supervisor for the bucket resources.
-
-  The supervisor is responsible for starting and stopping the bucket resources.
+  A supervisor for the registry and dynamic bucket supervisor
   """
 
-  use DynamicSupervisor
+  use Supervisor
 
   def start_link(opts) do
-    DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
+    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  def start_child(opts) do
-    DynamicSupervisor.start_child(__MODULE__, {Bucket.Bucket, opts})
-  end
+  @impl true
+  def init(_opts) do
+    Supervisor.init([
+      # Registry - Tracks bucket_key -> PID mappings
+      {Registry, keys: :unique, name: RateLimit.Registry},
 
-  def init(_init_arg) do
-    DynamicSupervisor.init(strategy: :one_for_one)
+      # DynamicSupervisor - Manages bucket GenServers on demand
+      {DynamicSupervisor, name: RateLimit.BucketSupervisor, strategy: :one_for_one}
+    ], strategy: :one_for_one)
   end
 end
